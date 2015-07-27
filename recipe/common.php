@@ -198,7 +198,7 @@ task('deploy:shared', function () {
  * Make writable dirs.
  */
 task('deploy:writable', function () {
-    $dirs = join(' ', get('writable_dirs'));
+    $dirs = implode(' ', get('writable_dirs'));
     $sudo = get('writable_use_sudo') ? 'sudo' : '';
 
     if (!empty($dirs)) {
@@ -207,21 +207,66 @@ task('deploy:writable', function () {
 
             cd('{{release_path}}');
 
-            if (strpos(run("chmod 2>&1; true"), '+a') !== false) {
+            $funcPermChmod = function($httpUser, $dirs, $sudo) {
                 if (!empty($httpUser)) {
                     run("$sudo chmod +a \"$httpUser allow delete,write,append,file_inherit,directory_inherit\" $dirs");
                 }
 
                 run("$sudo chmod +a \"`whoami` allow delete,write,append,file_inherit,directory_inherit\" $dirs");
-            } elseif (commandExist('setfacl')) {
+            };
+
+            $funcPermAcl = function($httpUser, $dirs, $sudo) {
                 if (!empty($httpUser)) {
                     run("$sudo setfacl -R -m u:\"$httpUser\":rwX -m u:`whoami`:rwX $dirs");
                     run("$sudo setfacl -dR -m u:\"$httpUser\":rwX -m u:`whoami`:rwX $dirs");
-                } else {
-                    run("$sudo chmod 777 $dirs");
+                }
+            };
+
+            $funcPermChmodBad = function($dirs, $sudo) {
+                run("$sudo chmod 777 $dirs");
+            };
+
+            // Use chosen permission method if it exists
+            if (has('permission_method')) {
+                switch (get('permission_method')) {
+                    case 'chmod':
+                        $funcPermChmod($httpUser, $dirs, $sudo);
+                        break;
+                    case 'chmod_777':
+                        $funcPermChmodBad($dirs, $sudo);
+                        break;
+                    case 'setfacl':
+                        $funcPermAcl($httpUser, $dirs, $sudo);
+                        break;
+                    default:
+                        $formatter = \Deployer\Deployer::get()->getHelper('formatter');
+
+                        $errorMessage = [
+                            "Unable to setup correct permissions for writable dirs.                  ",
+                            "Chosen permission_method needs to be chmod, chmod_777 or setfacl        "
+                        ];
+                        write($formatter->formatBlock($errorMessage, 'error', true));
+                        break;
                 }
             } else {
-                run("$sudo chmod 777 $dirs");
+                // No chosen permission method, try chmod then acl
+                if (strpos(run("chmod 2>&1; true"), '+a') !== false) {
+                    $funcPermChmod($httpUser, $dirs, $sudo);
+                } else {
+                    if (commandExist('setfacl')) {
+                        $funcPermAcl($httpUser, $dirs, $sudo);
+                    } else {
+                        $formatter = \Deployer\Deployer::get()->getHelper('formatter');
+
+                        $errorMessage = [
+                            "Unable to setup correct permissions for writable dirs.                  ",
+                            "Server not configured for chmod ACL or setfacl.                         ",
+                            "You can set permission_method to chmod_777 but we advise only as a last ",
+                            "resort as it gives read/write permissions to every user.                "
+                        ];
+                        write($formatter->formatBlock($errorMessage, 'error', true));
+                    }
+                }
             }
         } catch (\RuntimeException $e) {
             $formatter = \Deployer\Deployer::get()->getHelper('formatter');
